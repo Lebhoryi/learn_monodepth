@@ -45,21 +45,22 @@ class MonodepthModel(object):
 
     def __init__(self, params, mode, left, right, reuse_variables=None, model_index=0):
         self.params = params
-        self.mode = mode
-        self.left = left
+        self.mode = mode  # mode：train或者test
+        self.left = left  # left,right：是left_image_batch,right_image_batch。左右图以batch形式传进来
         self.right = right
-        self.model_collection = ['model_' + str(model_index)]
+
+        self.model_collection = ['model_' + str(model_index)]  # model_train
 
         self.reuse_variables = reuse_variables
 
-        self.build_model()
+        self.build_model()  # 创建模型
         self.build_outputs()
 
         if self.mode == 'test':
             return
 
-        self.build_losses()
-        self.build_summaries()     
+        self.build_losses()   # build_losses()：创建损失函数
+        self.build_summaries()   # build_summaries()：可视化工具
 
     def gradient_x(self, img):
         gx = img[:,:,:-1,:] - img[:,:,1:,:]
@@ -76,10 +77,22 @@ class MonodepthModel(object):
         return tf.image.resize_nearest_neighbor(x, [h * ratio, w * ratio])
 
     def scale_pyramid(self, img, num_scales):
+        """图像金字塔
+
+        @args:
+            img: 原图,batch形式
+            num_scales: 尺度个数
+
+        @return:
+            scaled_imgs: 原图加上 1/x 原图生成新的列表.
+        """
+        # 先将原图（batch形式的）放在列表中, list
         scaled_imgs = [img]
+        # 获取原图的长宽
         s = tf.shape(img)
         h = s[1]
         w = s[2]
+        # 根据num_scales, 生成原图的1/x的图,添加进列表中
         for i in range(num_scales - 1):
             ratio = 2 ** (i + 1)
             nh = h // ratio
@@ -126,11 +139,16 @@ class MonodepthModel(object):
         return smoothness_x + smoothness_y
 
     def get_disp(self, x):
+        """生成视差图"""
         disp = 0.3 * self.conv(x, 2, 3, 1, tf.nn.sigmoid)
         return disp
 
     def conv(self, x, num_out_layers, kernel_size, stride, activation_fn=tf.nn.elu):
+        # p 应该是 padding
+        # np.floor: 返回不大于输入参数的最大整数
+        # Q: 为什么不直接填充,需要另外设一个值 p
         p = np.floor((kernel_size - 1) / 2).astype(np.int32)
+        # 对 x 进行 p 填充, 默认"CONSTANT",填充0
         p_x = tf.pad(x, [[0, 0], [p, p], [p, p], [0, 0]])
         return slim.conv2d(p_x, num_out_layers, kernel_size, stride, 'VALID', activation_fn=activation_fn)
 
@@ -176,12 +194,15 @@ class MonodepthModel(object):
     def build_vgg(self):
         #set convenience functions
         conv = self.conv
+        # 判断使用 deconv 或者 upconv
         if self.params.use_deconv:
             upconv = self.deconv
         else:
             upconv = self.upconv
 
+        # 编码
         with tf.variable_scope('encoder'):
+            # 获得输入,进行卷积 conv1-conv7 都是标准的vgg
             conv1 = self.conv_block(self.model_input,  32, 7) # H/2
             conv2 = self.conv_block(conv1,             64, 5) # H/4
             conv3 = self.conv_block(conv2,            128, 3) # H/8
@@ -191,6 +212,7 @@ class MonodepthModel(object):
             conv7 = self.conv_block(conv6,            512, 3) # H/128
 
         with tf.variable_scope('skips'):
+            # skip指的是把conv1-conv7引出来
             skip1 = conv1
             skip2 = conv2
             skip3 = conv3
@@ -199,6 +221,8 @@ class MonodepthModel(object):
             skip6 = conv6
         
         with tf.variable_scope('decoder'):
+            # 在decoder中，upconv指采用反卷积或者上采样的方法逐步恢复原来的尺度。而skip引出的结果用来与decoder里面的feature
+            # maps在第三维也就是channel维叠起来后做upconv。这样逐步upconv
             upconv7 = upconv(conv7,  512, 3, 2) #H/64
             concat7 = tf.concat([upconv7, skip6], 3)
             iconv7  = conv(concat7,  512, 3, 1)
@@ -291,19 +315,27 @@ class MonodepthModel(object):
             self.disp1 = self.get_disp(iconv1)
 
     def build_model(self):
+        '''创建模型'''
+        # slim: [slim.conv2d, slim.conv2d_transpose] 使用相同的参数:activation_fn=tf.nn.elu
         with slim.arg_scope([slim.conv2d, slim.conv2d_transpose], activation_fn=tf.nn.elu):
             with tf.variable_scope('model', reuse=self.reuse_variables):
 
+                # 生成左图金字塔,self.scale_pyramid() 图像金字塔
+                # Q: 什么是金字塔?
                 self.left_pyramid  = self.scale_pyramid(self.left,  4)
+
+                # 如果是训练模式,生成右图金字塔
                 if self.mode == 'train':
                     self.right_pyramid = self.scale_pyramid(self.right, 4)
 
+                # 如果是stereo, 则把左右图在channel维上叠在一起作为模型输入。否则把左图作为模型输入
                 if self.params.do_stereo:
                     self.model_input = tf.concat([self.left, self.right], 3)
                 else:
                     self.model_input = self.left
 
                 #build model
+                # 根据params里面的设定，选择vgg或者resnet50作为编码器
                 if self.params.encoder == 'vgg':
                     self.build_vgg()
                 elif self.params.encoder == 'resnet50':

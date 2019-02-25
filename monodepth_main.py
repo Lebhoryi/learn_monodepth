@@ -37,7 +37,7 @@ parser.add_argument('--data_path',                 type=str,   help='path to the
 parser.add_argument('--filenames_file',            type=str,   help='path to the filenames text file', required=True)
 parser.add_argument('--input_height',              type=int,   help='input height', default=256)
 parser.add_argument('--input_width',               type=int,   help='input width', default=512)
-parser.add_argument('--batch_size',                type=int,   help='batch size', default=8)
+parser.add_argument('--batch_size',                type=int,   help='batch size', default=16)
 parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
 parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
 parser.add_argument('--lr_loss_weight',            type=float, help='left-right consistency weight', default=1.0)
@@ -82,46 +82,56 @@ def train(params):
 
         global_step = tf.Variable(0, trainable=False)
 
-        # OPTIMIZER  返回29000
+        # OPTIMIZER 训练的总样本数 返回29000
         num_training_samples = count_text_lines(args.filenames_file)
 
+        # 一个epoch中有多少步batch
         # np.ceil() 向上取整 29000 / 16 = 1813
         steps_per_epoch = np.ceil(num_training_samples / params.batch_size).astype(np.int32)
-        # 总共进行计算的数量 = epochs * 每个epoch的batches 50 * 1813 = 90650
+
+        # 总共进行计算 steps，为了更新学习率 计算方式：epochs * 每个epoch的batches 50 * 1813 = 90650
         num_total_steps = params.num_epochs * steps_per_epoch
         # 初始学习率
         start_learning_rate = args.learning_rate
 
-        # 边界 [0.6*num_total_steps, 0.8*num_total_steps]
+        # 更改学习率的边界值 [0.6*num_total_steps, 0.8*num_total_steps]
         boundaries = [np.int32((3/5) * num_total_steps), np.int32((4/5) * num_total_steps)]
-        #
-        values = [args.learning_rate, args.learning_rate / 2, args.learning_rate / 4]
+        # 各个阶段学习率的值，list
+        values = [start_learning_rate, start_learning_rate / 2, start_learning_rate / 4]
         # tf.train.piecewise_constant:当走到一定步长时更改学习率
         # global_step < 0.6*num_total_steps, lr为args.learning_rate
         # 0.6*num_total_stepsglobal_step < 0.8*num_total_steps, lr为args.learning_rate/2
         # global_step < 0.8*num_total_steps, lr为args.learning_rate/4
         learning_rate = tf.train.piecewise_constant(global_step, boundaries, values)
 
+        # optimizer, Adam优化器
         opt_step = tf.train.AdamOptimizer(learning_rate)
 
+        # 打印总样本的数量，总执行steps。
         print("total number of samples: {}".format(num_training_samples))
         print("total number of steps: {}".format(num_total_steps))
 
-        dataloader = MonodepthDataloader(args.data_path, args.filenames_file, params, args.dataset, args.mode)
-        left  = dataloader.left_image_batch
-        right = dataloader.right_image_batch
+        # 加载数据,依次获得一个batch的数据,每次四个线程
+        data_loader = MonodepthDataloader(args.data_path, args.filenames_file, params, args.dataset, args.mode)
+        # 是不是可以这么理解,left是 images, right 是 labels
+        left  = data_loader.left_image_batch
+        right = data_loader.right_image_batch
 
         # split for each gpu
+        # tf.split: 将left分成 tf.shape(left)[0] / args.num_gpus 份
         left_splits  = tf.split(left,  args.num_gpus, 0)
         right_splits = tf.split(right, args.num_gpus, 0)
 
         tower_grads  = []
         tower_losses = []
         reuse_variables = None
+        # Q: 不明白这样的写法, tf.variable_scope(tf.get_variable_scope())
+        # A: https://github.com/tensorflow/tensorflow/issues/6220
         with tf.variable_scope(tf.get_variable_scope()):
             for i in range(args.num_gpus):
                 with tf.device('/gpu:%d' % i):
 
+                    # Q: left_splits[i] 为什么加个[i]
                     model = MonodepthModel(params, args.mode, left_splits[i], right_splits[i], reuse_variables, i)
 
                     loss = model.total_loss
@@ -193,9 +203,9 @@ def train(params):
 def test(params):
     """Test function."""
 
-    dataloader = MonodepthDataloader(args.data_path, args.filenames_file, params, args.dataset, args.mode)
-    left  = dataloader.left_image_batch
-    right = dataloader.right_image_batch
+    data_loader = MonodepthDataloader(args.data_path, args.filenames_file, params, args.dataset, args.mode)
+    left  = data_loader.left_image_batch
+    right = data_loader.right_image_batch
 
     model = MonodepthModel(params, args.mode, left, right)
 
