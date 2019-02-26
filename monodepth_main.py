@@ -11,7 +11,7 @@ from __future__ import absolute_import, division, print_function
 
 # only keep warnings and errors
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL']='1'  # 这是默认的显示等级，显示所有信息
+os.environ['TF_CPP_MIN_LOG_LEVEL']='2'  # 更改为只显示warning 和 error
 
 import numpy as np
 import argparse
@@ -113,7 +113,7 @@ def train(params):
 
         # 加载数据,依次获得一个batch的数据,每次四个线程
         data_loader = MonodepthDataloader(args.data_path, args.filenames_file, params, args.dataset, args.mode)
-        # 是不是可以这么理解,left是 images, right 是 labels
+        # 可以这么理解,left是 images, right 是 labels
         left  = data_loader.left_image_batch
         right = data_loader.right_image_batch
 
@@ -123,7 +123,7 @@ def train(params):
         right_splits = tf.split(right, args.num_gpus, 0)
 
         tower_grads  = []
-        tower_losses = []
+        tower_losses = []  # 总损失值
         reuse_variables = None
         # Q: 不明白这样的写法, tf.variable_scope(tf.get_variable_scope())
         # A: https://github.com/tensorflow/tensorflow/issues/6220
@@ -154,6 +154,7 @@ def train(params):
         summary_op = tf.summary.merge_all('model_0')
 
         # SESSION
+        # 自动分配gpu 内存
         config = tf.ConfigProto(allow_soft_placement=True)
         sess = tf.Session(config=config)
 
@@ -187,6 +188,7 @@ def train(params):
             before_op_time = time.time()
             _, loss_value = sess.run([apply_gradient_op, total_loss])
             duration = time.time() - before_op_time
+            # 每运行100步 输出一次
             if step and step % 100 == 0:
                 examples_per_sec = params.batch_size / duration
                 time_sofar = (time.time() - start_time) / 3600
@@ -195,6 +197,7 @@ def train(params):
                 print(print_string.format(step, examples_per_sec, loss_value, time_sofar, training_time_left))
                 summary_str = sess.run(summary_op)
                 summary_writer.add_summary(summary_str, global_step=step)
+            # 每执行10000step 保存一次模型
             if step and step % 10000 == 0:
                 train_saver.save(sess, args.log_directory + '/' + args.model_name + '/model', global_step=step)
 

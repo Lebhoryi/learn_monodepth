@@ -101,6 +101,7 @@ class MonodepthModel(object):
         return scaled_imgs
 
     def generate_image_left(self, img, disp):
+        # 通过双线性插值的方法的来获取图片
         return bilinear_sampler_1d_h(img, -disp)
 
     def generate_image_right(self, img, disp):
@@ -320,8 +321,7 @@ class MonodepthModel(object):
         with slim.arg_scope([slim.conv2d, slim.conv2d_transpose], activation_fn=tf.nn.elu):
             with tf.variable_scope('model', reuse=self.reuse_variables):
 
-                # 生成左图金字塔,self.scale_pyramid() 图像金字塔
-                # Q: 什么是金字塔?
+                # 生成四个尺度的左图金字塔,self.scale_pyramid() 图像金字塔
                 self.left_pyramid  = self.scale_pyramid(self.left,  4)
 
                 # 如果是训练模式,生成右图金字塔
@@ -344,21 +344,30 @@ class MonodepthModel(object):
                     return None
 
     def build_outputs(self):
+        '''一次 loop 的输出'''
         # STORE DISPARITIES
+        # 生成 dr 和 dl
         with tf.variable_scope('disparities'):
+            # 将四个尺度的视差图排成队列
             self.disp_est  = [self.disp1, self.disp2, self.disp3, self.disp4]
+            # 从视差图队列中取出左(右)视差图(最后输出的视差图的0通道是左图, 1 通道是右图),
+            # 用tf.expand_dims()加上通道轴,变成[batch,height,width,1]形状的tensor
             self.disp_left_est  = [tf.expand_dims(d[:,:,:,0], 3) for d in self.disp_est]
             self.disp_right_est = [tf.expand_dims(d[:,:,:,1], 3) for d in self.disp_est]
 
+        # 如果是测试模式,之后的代码部分不运行
         if self.mode == 'test':
             return
 
-        # GENERATE IMAGES
+        # 原图估计, 调用生成左(右)图估计函数
         with tf.variable_scope('images'):
+            # 通过上面生成的 dr 和 dl 生成图片 I`r 和 I`l (backward sampling)
             self.left_est  = [self.generate_image_left(self.right_pyramid[i], self.disp_left_est[i])  for i in range(4)]
             self.right_est = [self.generate_image_right(self.left_pyramid[i], self.disp_right_est[i]) for i in range(4)]
 
-        # LR CONSISTENCY
+        # LR CONSISTENCY 左右一致性
+        # 用右视差图中的视差通过视差索引找到左视差图上的点, 然后再通过做视差图点上的视差索引生成新的右视差图.
+        # 就可以用右视差图和新的右视差图产生衡量一致性的项.
         with tf.variable_scope('left-right'):
             self.right_to_left_disp = [self.generate_image_left(self.disp_right_est[i], self.disp_left_est[i])  for i in range(4)]
             self.left_to_right_disp = [self.generate_image_right(self.disp_left_est[i], self.disp_right_est[i]) for i in range(4)]

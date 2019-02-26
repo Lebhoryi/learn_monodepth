@@ -11,6 +11,7 @@
 """
 
 from __future__ import absolute_import, division, print_function
+import os
 import tensorflow as tf
 
 def string_length_tf(t):
@@ -23,10 +24,10 @@ class MonodepthDataloader(object):
     """monodepth dataloader"""
 
     def __init__(self, data_path, filenames_file, params, dataset, mode):
-        self.data_path = data_path
-        self.params = params
-        self.dataset = dataset
-        self.mode = mode
+        self.data_path = data_path  # 数据路径
+        self.params = params  # 参数
+        self.dataset = dataset  # 数据集格式, 默认为kitti
+        self.mode = mode  # 模式, 训练或者测试
 
         # 自定义self.left_image_batch， self.right_image_batch的值
         self.left_image_batch  = None
@@ -36,7 +37,7 @@ class MonodepthDataloader(object):
         # tf.train.string_input_producer函数把我们需要的全部文件打包为一个tf内部的queue类型
         input_queue = tf.train.string_input_producer([filenames_file], shuffle=False)
         line_reader = tf.TextLineReader()
-        # 这个tensor做些数据与处理,分开image和label数据
+        # 输出键值对, line 包含一对双目图像的路径
         _, line = line_reader.read(input_queue)
 
         # 将[line]按照delimiter 拆分为多个元素，返回值为一个SparseTensor
@@ -45,16 +46,16 @@ class MonodepthDataloader(object):
         split_line = tf.string_split([line]).values
 
         # we load only one image for test, except if we trained a stereo model
-        # 只读取一张图片做测试,除非训练一个立体模型
+        # 只读取一张图片做测试,除非训练一个双目模型
         if mode == 'test' and self.params.do_stereo:
             # 左边图片路径, ["hello", "world"] ==> "helloworld"
-            left_image_path  = tf.string_join([self.data_path, split_line[0]])
+            left_image_path  = os.path.expanduser(tf.string_join([self.data_path, split_line[0]]))
             # 读取左边图片,返回resize后的图片
             left_image_o  = self.read_image(left_image_path)
         else:
             # 左右图片的路径
-            left_image_path  = tf.string_join([self.data_path, split_line[0]])
-            right_image_path = tf.string_join([self.data_path, split_line[1]])
+            left_image_path  = os.path.expanduser(tf.string_join([self.data_path, split_line[0]]))
+            right_image_path = os.path.expanduser(tf.string_join([self.data_path, split_line[1]]))
             # 读取左右图片
             left_image_o  = self.read_image(left_image_path)
             right_image_o = self.read_image(right_image_path)
@@ -64,13 +65,13 @@ class MonodepthDataloader(object):
             # randomly flip images
             # 随机翻转图片
 
-            # 根据生成的随机数判断图片是否进行左右翻转
+            # 随机选择50%图片进行左右翻转
             do_flip = tf.random_uniform([], 0, 1)
             left_image  = tf.cond(do_flip > 0.5, lambda: tf.image.flip_left_right(right_image_o), lambda: left_image_o)
             right_image = tf.cond(do_flip > 0.5, lambda: tf.image.flip_left_right(left_image_o),  lambda: right_image_o)
 
             # randomly augment images
-            # 随机修改图片
+            # 随机选择50%图片进行增强
             do_augment = tf.random_uniform([], 0, 1)
             left_image, right_image = tf.cond(do_augment > 0.5, lambda: self.augment_image_pair(left_image, right_image), lambda: (left_image, right_image))
 
